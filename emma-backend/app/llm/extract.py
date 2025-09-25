@@ -1,9 +1,13 @@
 """
 LLM extractor: builds a prompt, calls OpenAI, and normalizes the model's JSON
 into (facts, evidence) suitable for the incident pipeline.
+
+Enhancements:
+- Accepts an explicit report-time anchor (ISO8601, Europe/London) so the LLM can convert
+  relative phrases like "20 minutes ago" reliably.
 """
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 import json
 import os
 import re
@@ -32,18 +36,29 @@ ALLOWED_RISK_ASSESSMENTS = [
     "infection control review",
     "personal care & dignity plan review",
     "moving & handling / equipment safety review",
+    "nutrition & hydration plan review",
     None,
 ]
 
-def _build_prompt(transcript: str) -> str:
+
+def _build_prompt(transcript: str, report_time_iso: Optional[str] = None) -> str:
     """
     Compose the instruction + schema-constrained prompt for the LLM.
+    Optionally includes a report-time anchor (ISO8601, Europe/London) for relative time conversion.
     Returns a single string that asks the model to output ONLY valid JSON.
     """
+    anchor_line = (
+        f"Current report time (anchor) in Europe/London is: {report_time_iso}\n"
+        if report_time_iso else
+        ""
+    )
     return (
         "You are an information extraction assistant for adult social care incident reporting.\n"
+        + anchor_line +
         "From the call transcript below, return ONLY valid JSON with these keys:\n"
-        "- date_time_of_incident (ISO8601 if present or null)\n"
+        "- date_time_of_incident (ISO8601 if present; if only relative phrases are given like "
+        "'20 minutes ago' or 'yesterday', convert using Europe/London timezone and the report "
+        "time above as the anchor; if truly unknown, null)\n"
         "- service_user_name (full name if present or null)\n"
         "- location (free text, e.g., \"living room\", or null)\n"
         "- incident_type (one of: fall | medication_refusal | medication_missed | medication_error | "
@@ -59,15 +74,21 @@ def _build_prompt(transcript: str) -> str:
         "- risk_assessment_needed (boolean)\n"
         "- if_yes_which_risk_assessment (one of: \"moving and handling risk assessment review\" | "
         "\"medication management review\" | \"mental health/wellbeing review\" | \"infection control review\" | "
-        "\"personal care & dignity plan review\" | \"moving & handling / equipment safety review\" | null)\n"
+        "\"personal care & dignity plan review\" | \"moving & handling / equipment safety review\" | "
+        "\"nutrition & hydration plan review\" | null)\n"
         "- evidence: array of {\"field\":\"<key>\", \"quote\":\"<short supporting quote>\"}\n\n"
         "Guidance:\n"
+        "- Prefer explicit dates/times from the transcript. If only relative timing is given "
+        "(e.g., '20 minutes ago', 'yesterday', 'this morning'), convert it into ISO8601 using "
+        "Europe/London timezone and the report time above as the anchor.\n"
+        "- If you cannot reasonably infer the time, set date_time_of_incident to null (do not guess).\n"
         "- Set risk_assessment_needed true when the transcript shows a recurring pattern or policy trigger.\n"
         "- Use \"moving and handling risk assessment review\" for recurring falls (e.g., 2nd/3rd time this week).\n"
         "- If unsure, set fields to null. Do NOT invent names or facts.\n\n"
         "Transcript:\n"
         f"{transcript}"
     )
+
 
 def _strip_md_fences(s: str) -> str:
     """
@@ -79,11 +100,14 @@ def _strip_md_fences(s: str) -> str:
     s = re.sub(r'```\s*$', '', s)
     return s.strip()
 
-def extract_with_llm(text: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+
+def extract_with_llm(text: str, report_time_iso: Optional[str] = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Call the OpenAI Chat Completions API with the prompt, parse/validate JSON,
-    clamp to allowed values, and return (facts, evidence). Falls back to {} / []
-    if the API key is missing or a parsing error occurs.
+    clamp to allowed values, and return (facts, evidence).
+    - report_time_iso: ISO8601 string used as the anchor "now" (Europe/London) for relative phrases.
+
+    Returns {} / [] if the API key is missing or a parsing error occurs.
     """
     if not os.getenv("OPENAI_API_KEY"):
         return {}, []
@@ -92,7 +116,7 @@ def extract_with_llm(text: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         from openai import OpenAI
         client = OpenAI()
         model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        prompt = _build_prompt(text)
+        prompt = _build_prompt(text, report_time_iso=report_time_iso)
         resp = client.chat.completions.create(
             model=model,
             messages=[

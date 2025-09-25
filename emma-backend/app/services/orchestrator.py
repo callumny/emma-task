@@ -6,8 +6,9 @@ normalizes results into a standard incident form, builds a draft email, and retu
 """
 
 from __future__ import annotations
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import os
 import re
 
@@ -18,8 +19,10 @@ from app.config.incident_config import (
     load_notifications,
     load_global_policy_triggers,
 )
+from app.util.datetime_extract import extract_incident_datetime
 
 log = get_logger("app.services.orchestrator")
+UK_TZ = ZoneInfo("Europe/London")
 
 
 def _default_form() -> Dict[str, Any]:
@@ -28,7 +31,10 @@ def _default_form() -> Dict[str, Any]:
     Used to ensure all required keys are always present.
     """
     return {
-        "date_time_of_incident": datetime.utcnow().isoformat(),
+        # Let the LLM set this; if missing, we'll fallback to explicit parsing.
+        "date_time_of_incident": None,
+        # Always capture when this report was created (auditable, Europe/London).
+        "reported_at": datetime.now(tz=UK_TZ).isoformat(),
         "service_user_name": None,
         "location": None,
         "type_of_incident": None,
@@ -104,7 +110,8 @@ def _build_email(form: Dict[str, Any]) -> str:
         f"CC: {', '.join(cc)}" if cc else "",
         f"Subject: {subject}",
         "",
-        f"Date/Time: {form.get('date_time_of_incident')}",
+        f"Date/Time: {form.get('date_time_of_incident') or 'None'}",
+        f"Reported At: {form.get('reported_at') or 'None'}",
         f"Service User: {form.get('service_user_name') or 'Unknown'}",
         f"Location: {form.get('location') or 'Unknown'}",
         f"Type: {form.get('type_of_incident') or 'Unknown'}",
@@ -155,6 +162,98 @@ def _facts_to_form(facts: Dict[str, Any]) -> Dict[str, Any]:
     return form
 
 
+def _llm_datetime_fallback(form: Dict[str, Any], transcript: str, evidence: List[Dict[str, Any]]) -> None:
+    """
+    If the LLM did not provide a date_time_of_incident, attempt explicit/relative parsing.
+    On low-confidence inference, add a gentle confirmation hint to immediate_actions_taken.
+    """
+    if form.get("date_time_of_incident"):
+        return
+    dt_info = extract_incident_datetime(transcript, now=datetime.now(tz=UK_TZ))
+    if not dt_info.get("value"):
+        return
+
+    form["date_time_of_incident"] = dt_info["value"]
+    # Optional hint if low confidence
+    if dt_info.get("confidence") == "low":
+        hint = "Incident time inferred from context – please confirm"
+        existing = form.get("immediate_actions_taken")
+        form["immediate_actions_taken"] = f"{existing} | {hint}" if existing else hint
+
+    # Optional: attach evidence
+    quote = dt_info.get("evidence_quote")
+    if quote:
+        evidence.append({
+            "field": "date_time_of_incident",
+            "quote": quote,
+            "start_idx": None,
+            "end_idx": None
+        })
+
+
+# --- Sanity guard for implausible LLM times (when no explicit date in transcript) ---
+
+_EXPLICIT_DATE_REGEXES = [
+    r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+    r"\b\d{1,2}-\d{1,2}-\d{2,4}\b",
+    r"\b\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{2,4}\b",
+    r"\b\d{1,2}\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{2,4}\b",
+]
+
+def _has_explicit_date(text: str) -> bool:
+    low = text.lower()
+    for pat in _EXPLICIT_DATE_REGEXES:
+        try:
+            if re.search(pat, low, flags=re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+def _parse_iso(dt_s: Optional[str]):
+    if not dt_s:
+        return None
+    try:
+        return datetime.fromisoformat(dt_s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def _sanity_fix_incident_time(form: Dict[str, Any], transcript: str, anchor: datetime, evidence: List[Dict[str, Any]]):
+    """
+    If LLM gave an implausible incident time (e.g., years off) and there is NO explicit date in transcript,
+    fallback to deterministic parsing relative to `anchor` (Europe/London). Otherwise null it out.
+    """
+    dt = _parse_iso(form.get("date_time_of_incident"))
+    if not dt:
+        return  # nothing to fix
+
+    if _has_explicit_date(transcript):
+        return  # caller said an actual date; respect it
+
+    # If LLM time is more than 7 days away from anchor, consider it implausible
+    delta = abs((dt - anchor).total_seconds())
+    seven_days = 7 * 24 * 3600
+    if delta > seven_days:
+        info = extract_incident_datetime(transcript, now=anchor)
+        new_val = info.get("value")
+        if new_val:
+            form["date_time_of_incident"] = new_val
+            if info.get("confidence") == "low":
+                hint = "Incident time inferred from context – please confirm"
+                existing = form.get("immediate_actions_taken")
+                form["immediate_actions_taken"] = f"{existing} | {hint}" if existing else hint
+            q = info.get("evidence_quote")
+            if q:
+                evidence.append({
+                    "field": "date_time_of_incident",
+                    "quote": q,
+                    "start_idx": None,
+                    "end_idx": None
+                })
+        else:
+            form["date_time_of_incident"] = None
+
+
 def analyze_transcript(transcript: str) -> Dict[str, Any]:
     """
     Analyze a transcript using the LLM if available, falling back to rule-based extraction otherwise.
@@ -165,12 +264,16 @@ def analyze_transcript(transcript: str) -> Dict[str, Any]:
     source = "rules"
     facts: Dict[str, Any] = {}
 
+    anchor = datetime.now(tz=UK_TZ)
+    anchor_iso = anchor.isoformat()
+
     key_present = bool(os.getenv("OPENAI_API_KEY"))
     log.info(f"env.OPENAI_API_KEY.present={key_present}")
 
     if key_present:
         try:
-            facts, evidence = extract_with_llm(transcript)
+            # IMPORTANT: pass anchor to LLM for relative time conversion
+            facts, evidence = extract_with_llm(transcript, report_time_iso=anchor_iso)
             log.info(f"llm.result.keys={list(facts.keys()) if facts else []}")
             if facts:
                 source = "llm"
@@ -183,6 +286,12 @@ def analyze_transcript(transcript: str) -> Dict[str, Any]:
         source = "rules"
 
     form = _facts_to_form(facts)
+
+    # If LLM (or rules) omitted incident time, try explicit/relative fallback.
+    _llm_datetime_fallback(form, transcript, evidence)
+
+    # Sanity fix if LLM produced implausible time (no explicit date)
+    _sanity_fix_incident_time(form, transcript, anchor, evidence)
 
     # Add GP/999 hints from global triggers BEFORE building the email
     _maybe_append_action(form, transcript)
@@ -203,8 +312,18 @@ def analyze_transcript_llm_only(transcript: str) -> Dict[str, Any]:
     Useful for debugging or comparing model vs. rules performance.
     """
     log.info("analyze_transcript_llm_only.start")
-    facts, evidence = extract_with_llm(transcript)
+
+    anchor = datetime.now(tz=UK_TZ)
+    anchor_iso = anchor.isoformat()
+
+    facts, evidence = extract_with_llm(transcript, report_time_iso=anchor_iso)
     form = _facts_to_form(facts)
+
+    # Same behavior: try fallback parsing if LLM leaves datetime empty.
+    _llm_datetime_fallback(form, transcript, evidence)
+
+    # Sanity fix for implausible times
+    _sanity_fix_incident_time(form, transcript, anchor, evidence)
 
     # Apply global policy triggers
     _maybe_append_action(form, transcript)
@@ -217,6 +336,7 @@ def analyze_transcript_llm_only(transcript: str) -> Dict[str, Any]:
         "evidence": evidence,
         "draft_email": email,
     }
+
 
 def llm_diagnostic() -> Dict[str, Any]:
     """
