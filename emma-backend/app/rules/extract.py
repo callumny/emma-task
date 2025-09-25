@@ -1,15 +1,40 @@
+"""
+rules/extract.py
+
+This module implements rule-based extraction of incident facts, evidence, and risk assessments 
+from transcript text using regex patterns and policy-aligned heuristics.
+"""
+
 import re
 from typing import Dict, Any, List, Tuple
 from app.config.incident_config import load_incident_config_strict
 from app.rules.assessments import which_risk_assessment
 
 def _find_spans(text: str, pattern: str) -> List[Tuple[int, int]]:
+    """
+    Find all (start, end) index spans in `text` matching the given regex pattern.
+    Returns a list of spans for evidence highlighting.
+    """
     spans = []
     for m in re.finditer(pattern, text, flags=re.IGNORECASE):
         spans.append((m.start(), m.end()))
     return spans
 
 def extract_with_rules(text: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Apply rule-based extraction to a transcript.
+
+    - Loads incident type patterns and locations from config
+    - Detects service user name, incident type, and location
+    - Flags first aid and emergency services based on explicit words
+    - Infers risk assessments via `which_risk_assessment`
+    - Builds evidence spans for matched fields
+
+    Returns:
+        facts: dict of extracted incident fields
+        evidence: list of evidence dicts with quotes and spans
+        debug: placeholder dict for any debugging info
+    """
     patterns, locations = load_incident_config_strict()
     facts: Dict[str, Any] = {
         "incident_type": None,

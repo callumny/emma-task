@@ -1,3 +1,8 @@
+"""
+logging.py
+
+This module configures application-wide logging and provides a helper to create namespaced loggers.
+"""
 
 import logging, sys, os
 

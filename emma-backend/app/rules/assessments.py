@@ -1,3 +1,10 @@
+"""
+assessments.py
+
+This module infers which risk assessment or review is required based on the
+incident transcript and detected incident type, using policy-aligned regex patterns.
+"""
+
 from __future__ import annotations
 import re
 from typing import Optional, Tuple

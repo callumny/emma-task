@@ -1,8 +1,14 @@
+"""
+LLM extractor: builds a prompt, calls OpenAI, and normalizes the model's JSON
+into (facts, evidence) suitable for the incident pipeline.
+"""
+
 from typing import Dict, Any, List, Tuple
 import json
 import os
 import re
 
+# Whitelists used to clamp/normalize model output
 ALLOWED_INCIDENT_TYPES = [
     "fall",
     "medication_refusal",
@@ -30,6 +36,10 @@ ALLOWED_RISK_ASSESSMENTS = [
 ]
 
 def _build_prompt(transcript: str) -> str:
+    """
+    Compose the instruction + schema-constrained prompt for the LLM.
+    Returns a single string that asks the model to output ONLY valid JSON.
+    """
     return (
         "You are an information extraction assistant for adult social care incident reporting.\n"
         "From the call transcript below, return ONLY valid JSON with these keys:\n"
@@ -60,12 +70,21 @@ def _build_prompt(transcript: str) -> str:
     )
 
 def _strip_md_fences(s: str) -> str:
+    """
+    Remove ```json ... ``` fences if the model wrapped the JSON in Markdown code blocks.
+    Returns the cleaned string for JSON parsing.
+    """
     s = s.strip()
     s = re.sub(r'^```(?:json)?\s*', '', s, flags=re.IGNORECASE)
     s = re.sub(r'```\s*$', '', s)
     return s.strip()
 
 def extract_with_llm(text: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Call the OpenAI Chat Completions API with the prompt, parse/validate JSON,
+    clamp to allowed values, and return (facts, evidence). Falls back to {} / []
+    if the API key is missing or a parsing error occurs.
+    """
     if not os.getenv("OPENAI_API_KEY"):
         return {}, []
 

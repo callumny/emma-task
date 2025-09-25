@@ -1,3 +1,10 @@
+"""
+orchestrator.py
+
+This module coordinates transcript analysis: it calls LLM and/or rules-based extractors,
+normalizes results into a standard incident form, builds a draft email, and returns evidence.
+"""
+
 from __future__ import annotations
 from typing import Dict, Any, List
 from datetime import datetime
@@ -10,6 +17,10 @@ from app.rules.extract import extract_with_rules
 log = get_logger("app.services.orchestrator")
 
 def _default_form() -> Dict[str, Any]:
+    """
+    Create a new blank incident form with default values.
+    Used to ensure all required keys are always present.
+    """
     return {
         "date_time_of_incident": datetime.utcnow().isoformat(),
         "service_user_name": None,
@@ -27,6 +38,10 @@ def _default_form() -> Dict[str, Any]:
     }
 
 def _build_email(form: Dict[str, Any]) -> str:
+    """
+    Construct a plain-text draft email summarizing the incident form.
+    CCs the risk assessor only if the recurring-falls assessment is triggered.
+    """
     to = "supervisor@example.com"
     cc = []
 
@@ -64,6 +79,10 @@ def _build_email(form: Dict[str, Any]) -> str:
     return "\n".join([l for l in lines if l is not None])
 
 def _facts_to_form(facts: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert a dictionary of extracted facts into a fully-formed incident form,
+    ensuring key names match the expected output schema.
+    """
     form = _default_form()
     mapping = {
         "date_time_of_incident": "date_time_of_incident",
@@ -86,6 +105,10 @@ def _facts_to_form(facts: Dict[str, Any]) -> Dict[str, Any]:
     return form
 
 def analyze_transcript(transcript: str) -> Dict[str, Any]:
+    """
+    Analyze a transcript using the LLM if available, falling back to rule-based extraction otherwise.
+    Returns the source used, a completed incident form, evidence, and a draft email.
+    """
     log.info("analyze_transcript.start")
     evidence: List[Dict[str, Any]] = []
     source = "rules"
@@ -119,6 +142,10 @@ def analyze_transcript(transcript: str) -> Dict[str, Any]:
     }
 
 def analyze_transcript_llm_only(transcript: str) -> Dict[str, Any]:
+    """
+    Analyze a transcript using only the LLM (no rules fallback).
+    Useful for debugging or comparing model vs. rules performance.
+    """
     log.info("analyze_transcript_llm_only.start")
     facts, evidence = extract_with_llm(transcript)
     form = _facts_to_form(facts)
@@ -132,6 +159,13 @@ def analyze_transcript_llm_only(transcript: str) -> Dict[str, Any]:
     }
 
 def llm_diagnostic() -> Dict[str, Any]:
+    """
+    Run diagnostic checks for the LLM integration:
+    - confirm env vars are set
+    - verify SDK import
+    - attempt a minimal test call if possible
+    Returns a dictionary of diagnostic info.
+    """
     info: Dict[str, Any] = {}
     info["env_key_present"] = bool(os.getenv("OPENAI_API_KEY"))
     info["model"] = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
