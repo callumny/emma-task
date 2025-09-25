@@ -9,12 +9,18 @@ from __future__ import annotations
 from typing import Dict, Any, List
 from datetime import datetime
 import os
+import re
 
 from app.infra.logging import get_logger
 from app.llm.extract import extract_with_llm
 from app.rules.extract import extract_with_rules
+from app.config.incident_config import (
+    load_notifications,
+    load_global_policy_triggers,
+)
 
 log = get_logger("app.services.orchestrator")
+
 
 def _default_form() -> Dict[str, Any]:
     """
@@ -37,21 +43,64 @@ def _default_form() -> Dict[str, Any]:
         "if_yes_which_risk_assessment": None,
     }
 
+
+def _maybe_append_action(form: Dict[str, Any], transcript: str) -> None:
+    """
+    Add GP/999 suggestions to immediate_actions_taken if global triggers match the transcript.
+    This is policy suggestion (not extraction), so it stays here in the orchestrator.
+    """
+    triggers = load_global_policy_triggers()
+    low = transcript.lower()
+    actions: List[str] = []
+
+    # Contact GP triggers
+    for pat in triggers.get("contact_gp_if", []):
+        try:
+            if re.search(pat, low, flags=re.IGNORECASE):
+                actions.append("Contact GP immediately (policy trigger)")
+                break
+        except re.error:
+            continue
+
+    # Call 999 triggers
+    for pat in triggers.get("call_999_if", []):
+        try:
+            if re.search(pat, low, flags=re.IGNORECASE):
+                actions.append("Call 999 / emergency services (life-threatening trigger)")
+                break
+        except re.error:
+            continue
+
+    if actions:
+        existing = form.get("immediate_actions_taken")
+        joined = " | ".join(actions)
+        form["immediate_actions_taken"] = f"{existing} | {joined}" if existing else joined
+
+
 def _build_email(form: Dict[str, Any]) -> str:
     """
     Construct a plain-text draft email summarizing the incident form.
-    CCs the risk assessor only if the recurring-falls assessment is triggered.
+    'To' and 'CC' come from config:
+      - To: notifications.always_notify (defaults to "Supervisor")
+      - CC: notifications.cc_by_assessment[<risk_assessment_name>] if present
     """
-    to = "supervisor@example.com"
-    cc = []
+    notifications = load_notifications() or {}
+    to_addr = notifications.get("always_notify", "Supervisor")
+    cc_map = notifications.get("cc_by_assessment", {}) or {}
 
-    # CC Risk Assessor ONLY when it's the explicit moving & handling recurring-falls review
-    if form.get("if_yes_which_risk_assessment") == "moving and handling risk assessment review":
-        cc.append("risk.assessor@example.com")
+    # CC by selected risk assessment name (if configured)
+    cc: List[str] = []
+    ra_name = form.get("if_yes_which_risk_assessment")
+    if ra_name and ra_name in cc_map:
+        cc.append(cc_map[ra_name])
+
+    # Ensure 'who_was_notified' reflects the default policy if empty
+    if not form.get("who_was_notified"):
+        form["who_was_notified"] = to_addr
 
     subject = f"Incident report: {form.get('type_of_incident') or 'Unknown'} – {form.get('service_user_name') or 'Service User'}"
     lines = [
-        f"To: {to}",
+        f"To: {to_addr}",
         f"CC: {', '.join(cc)}" if cc else "",
         f"Subject: {subject}",
         "",
@@ -74,9 +123,10 @@ def _build_email(form: Dict[str, Any]) -> str:
         "Next Steps:",
         form.get("agreed_next_steps") or "-",
         f"Risk Assessment Needed: {'Yes' if form.get('risk_assessment_needed') else 'No'}",
-        f"If Yes, Which: {form.get('if_yes_which_risk_assessment') or '-'}",
+        f"If Yes, Which: {ra_name or '-'}",
     ]
     return "\n".join([l for l in lines if l is not None])
+
 
 def _facts_to_form(facts: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -103,6 +153,7 @@ def _facts_to_form(facts: Dict[str, Any]) -> Dict[str, Any]:
         if k_src in facts:
             form[k_dst] = facts[k_src]
     return form
+
 
 def analyze_transcript(transcript: str) -> Dict[str, Any]:
     """
@@ -132,6 +183,10 @@ def analyze_transcript(transcript: str) -> Dict[str, Any]:
         source = "rules"
 
     form = _facts_to_form(facts)
+
+    # Add GP/999 hints from global triggers BEFORE building the email
+    _maybe_append_action(form, transcript)
+
     email = _build_email(form)
     log.info(f"analyze_transcript.done source={source}")
     return {
@@ -141,6 +196,7 @@ def analyze_transcript(transcript: str) -> Dict[str, Any]:
         "draft_email": email,
     }
 
+
 def analyze_transcript_llm_only(transcript: str) -> Dict[str, Any]:
     """
     Analyze a transcript using only the LLM (no rules fallback).
@@ -149,6 +205,10 @@ def analyze_transcript_llm_only(transcript: str) -> Dict[str, Any]:
     log.info("analyze_transcript_llm_only.start")
     facts, evidence = extract_with_llm(transcript)
     form = _facts_to_form(facts)
+
+    # Apply global policy triggers
+    _maybe_append_action(form, transcript)
+
     email = _build_email(form)
     log.info(f"analyze_transcript_llm_only.done facts_present={bool(facts)}")
     return {

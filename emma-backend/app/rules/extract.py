@@ -97,13 +97,13 @@ def extract_with_rules(text: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]],
             })
             break
 
-    # First aid / emergency toggles (very conservative defaults unless explicit)
+    # First aid / emergency toggles
     if re.search(r"\b(blood|bleeding|broken|fracture)\b", low):
-        facts["was_first_aid_administered"] = False  # caller said no blood/broken in your example; keep default False
+        facts["was_first_aid_administered"] = False
     if re.search(r"\b(999|ambulance|emergency services|paramedic)\b", low):
         facts["were_emergency_services_contacted"] = True
 
-    # Risk assessment inference (includes explicit policy rule for recurring falls)
+    # Risk assessment inference
     assessment, ra_quote = which_risk_assessment(text, facts.get("incident_type"))
     if assessment:
         facts["risk_assessment_needed"] = True

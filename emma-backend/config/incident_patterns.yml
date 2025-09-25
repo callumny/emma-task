@@ -39,3 +39,74 @@ locations:
   - dining room
   - corridor
   - outside
+
+notifications:
+  # Always notify this role/person (used as "To:" and default for 'who_was_notified')
+  always_notify: "Supervisor"
+
+  # Optional CCs driven by the selected risk assessment name
+  cc_by_assessment:
+    "moving and handling risk assessment review": "moving.handling.lead@example.com"
+    "medication management review": "duty.pharmacist@example.com"
+    "mental health/wellbeing review": "safeguarding.lead@example.com"
+    "infection control review": "quarantine.expert@example.com"
+    "personal care & dignity plan review": "personal.care@example.com"
+    "nutrition & hydration plan review": "nutritionist@example.com"
+
+  # Global triggers for GP or 999 actions (checked against whole transcript)
+  global_policy_triggers:
+    contact_gp_if:
+      - "\\b(bleeding|heavy bleed|significant bleed|overdose|over-dosed|overdosed)\\b"
+    call_999_if:
+      - "\\b(unconscious|not breathing|no pulse|seizure.+prolonged|life[- ]?threatening)\\b"
+
+assessments:
+  - name: "moving and handling risk assessment review"
+    incident_types: ["fall"]
+    patterns:
+      - "\\b(third|second|3rd|2nd)\\s+time\\b.*\\b(week|this week)\\b"
+      - "\\bagain\\b.*\\b(fall|fallen|on the floor)\\b"
+    policy_actions:
+      notify_supervisor: true
+
+  - name: "medication management review"
+    incident_types: ["medication_refusal", "medication_missed", "medication_error"]
+    patterns:
+      - "\\b(refus|missed|wrong|incorrect|confus)\\w*\\b.*\\b(med(ication)?|tablet|pill|dose)\\b"
+      - "\\b(confused|unsure)\\b.*\\b(med(ication)?|tablet|pill|dose)\\b"
+    policy_actions:
+      notify_supervisor: true
+      notify_family_if_confused: true
+
+  - name: "mental health/wellbeing review"
+    patterns:
+      - "\\b(confused|disoriented|distressed|hopeless|anxious|worried|depressed)\\b"
+    policy_actions:
+      notify_supervisor: true
+      notify_family_if_confused: true
+
+  - name: "infection control review"
+    patterns:
+      - "\\b(ppe (unavailable|missing)|no ppe|flu|covid|infectious|isolate|contagious)\\b"
+    policy_actions:
+      notify_supervisor: true
+      suggest_isolation: true
+
+  - name: "personal care & dignity plan review"
+    patterns:
+      - "\\b(refus\\w*)\\b.*\\b(personal care|wash|bath|shower|toilet)\\b.*\\b(again|more than once|repeated|another time)\\b"
+    policy_actions:
+      notify_supervisor: true
+      notify_family: true
+
+  - name: "moving & handling / equipment safety review"
+    patterns:
+      - "\\b(hoist|wheelchair|alarm|lift|walking aid|stick|frame)\\b.*\\b(broken|failed|not working|malfunction|strap snapped)\\b"
+    policy_actions:
+      notify_supervisor: true
+
+  - name: "nutrition & hydration plan review"
+    patterns:
+      - "\\b(refus\\w*)\\b.*\\b(food|drink|meal|water|hydration|eat)\\b"
+    policy_actions:
+      notify_supervisor: true
