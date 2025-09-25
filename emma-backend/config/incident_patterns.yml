@@ -1,0 +1,41 @@
+patterns:
+  fall:
+    - "(fell|falling|slipped|tripped|on the floor|collapsed)"
+  medication_refusal:
+    - "(refused|would not take|won't take).* (medication|medicine|tablet|pill)"
+    - "refused medication"
+  medication_missed:
+    - "(missed|forgot).* (dose|medication|tablet|pill)"
+    - "missed (dose|medication)"
+  medication_error:
+    - "(wrong|incorrect).* (medication|dose|tablet|pill)"
+    - "(double[- ]?dosed|overdosed|underdosed)"
+  aggressive_behavior:
+    - "(hit|kicked|punched|threw|aggressive|physical assault)"
+  verbal_abuse:
+    - "(shouted|swore|insulted|verbal abuse|threatened)"
+  self_harm:
+    - "(cut|harmed|hurt myself|self[- ]?harm)"
+  wandering:
+    - "(wandered off|missing|could not find|left unsafely|absconded)"
+  medical_emergency:
+    - "(chest pain|seizure|difficulty breathing|unconscious|collapsed)"
+  near_miss:
+    - "(almost|nearly).* (fall|took wrong|wrong medication)"
+  equipment_failure:
+    - "(broken|not working|failed|malfunction).* (hoist|wheelchair|alarm|equipment|lift)"
+  safeguarding_concern:
+    - "(neglect|abuse|unsafe|not cared for|hit by staff)"
+
+locations:
+  - living room
+  - lounge
+  - kitchen
+  - bathroom
+  - bedroom
+  - garden
+  - hallway
+  - stairs
+  - dining room
+  - corridor
+  - outside
